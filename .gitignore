@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+
+# GNU Radio
+*.py~
+*.log
+
+# Build artifacts
+build/
+*.o
+*.so
+
+# Data / recordings
+*.iq
+*.wav
+
+# OS junk
+.DS_Store
+
