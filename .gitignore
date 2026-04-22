@@ -1,27 +1,9 @@
-# Python
-__pycache__/
-*.pyc
+# Local editor/runtime metadata
+.codex
 
-# GNU Radio
-*.py~
-*.log
-
-# Build artifacts
+# Local build outputs
 build/
-*.o
-*.so
-gen_am_iq
-read_iq
-am_iq_to_wav
+radio_encoder
 
-# Data / recordings
-*.iq
-*.wav
-
-# OS junk
-.DS_Store
-
-
-# IQ captures
-data/iq/
-*.raw
+# Local IQ captures
+/data/iq/*.raw

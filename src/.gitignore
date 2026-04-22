@@ -1,9 +1,0 @@
-# Local editor/runtime metadata
-.codex
-
-# Local build outputs
-build/
-radio_encoder
-
-# Local IQ captures
-/data/iq/*.raw
