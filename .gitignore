@@ -10,6 +10,9 @@ __pycache__/
 build/
 *.o
 *.so
+gen_am_iq
+read_iq
+am_iq_to_wav
 
 # Data / recordings
 *.iq
