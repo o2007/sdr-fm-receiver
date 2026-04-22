@@ -133,7 +133,6 @@ static int step_button_poll_pressed(ButtonInput *b)
         b->last_change_ms = t;
         int prev = b->last_state;
         b->last_state = st;
-        // active-low button press event
         if (prev == 1 && st == 0) return 1;
     }
     return 0;
@@ -244,7 +243,7 @@ static void config_defaults(RadioConfig *c)
     c->step_hz = 100000;
     c->volume_pct = 80;
     c->volume_step_pct = 4;
-    c->volume_max_pct = 400; // allows stronger boost where needed
+    c->volume_max_pct = 400;
     c->rtl_index = 0;
     c->ppm = 0;
     strcpy(c->gain, "auto");
@@ -326,13 +325,17 @@ static void lcd_show_status(const RadioConfig *cfg)
     vol = g_volume_pct;
     pthread_mutex_unlock(&g_state_mu);
 
-    // 16-char LCD dashboard:
-    // LCD-safe Icelandic transliteration labels.
     snprintf(line0, sizeof(line0), "Tidni %5.1f", (double)cfg->target_freq_hz / 1e6);
     snprintf(line1, sizeof(line1), "Hljodstrykur %03d", vol);
 
     if (lcd1602_set_cursor(&g_lcd, 0, 0) == 0) (void)lcd1602_print_padded(&g_lcd, line0, 16);
     if (lcd1602_set_cursor(&g_lcd, 0, 1) == 0) (void)lcd1602_print_padded(&g_lcd, line1, 16);
+}
+
+static void display_update(const RadioConfig *cfg)
+{
+    lcd_show_status(cfg);
+    ui_write_status(cfg, 1);
 }
 
 static int parse_args(int argc, char **argv, RadioConfig *c, Encoder *tune, Encoder *vol)
@@ -502,8 +505,7 @@ int main(int argc, char **argv)
         if (step_button_poll_pressed(&g_step_btn)) {
             cfg.step_hz = (cfg.step_hz == 100000) ? 10000 : 100000;
             fprintf(stderr, "Step: %d Hz\n", cfg.step_hz);
-            lcd_show_status(&cfg);
-            ui_write_status(&cfg, 1);
+            display_update(&cfg);
         }
 
         int st = encoder_poll_step(&tune);
@@ -512,8 +514,7 @@ int main(int argc, char **argv)
             if (cfg.target_freq_hz < cfg.min_freq_hz) cfg.target_freq_hz = cfg.min_freq_hz;
             if (cfg.target_freq_hz > cfg.max_freq_hz) cfg.target_freq_hz = cfg.max_freq_hz;
             fprintf(stderr, "Target: %.1f MHz\n", (double)cfg.target_freq_hz / 1e6);
-            lcd_show_status(&cfg);
-            ui_write_status(&cfg, 1);
+            display_update(&cfg);
             last_input_ms = mono_now_ms();
         }
 
@@ -526,16 +527,13 @@ int main(int argc, char **argv)
             g_volume_pct = v;
             pthread_mutex_unlock(&g_state_mu);
             fprintf(stderr, "Volume: %d%%\n", v);
-            lcd_show_status(&cfg);
-            ui_write_status(&cfg, 1);
+            display_update(&cfg);
         }
 
         if (cfg.gain_encoder_enabled) {
             int sg = encoder_poll_step(&gain);
             if (sg != 0) {
                 if (gain_idx < 0) {
-                    // From AUTO, either rotation direction should immediately pick
-                    // a real gain so the knob never feels dead.
                     gain_idx = (k_gain_steps_count / 2) + (sg > 0 ? 1 : -1);
                 } else {
                     gain_idx += sg;
@@ -545,8 +543,7 @@ int main(int argc, char **argv)
                 set_gain_from_index(&cfg, gain_idx);
                 gain_pending = 1;
                 fprintf(stderr, "Gain: %s dB\n", strcmp(cfg.gain, "auto") == 0 ? "auto" : cfg.gain);
-                lcd_show_status(&cfg);
-                ui_write_status(&cfg, 1);
+                display_update(&cfg);
             }
         }
 
@@ -557,8 +554,7 @@ int main(int argc, char **argv)
 
             cfg.freq_hz = cfg.target_freq_hz;
             fprintf(stderr, "Tune: %.1f MHz\n", (double)cfg.freq_hz / 1e6);
-            lcd_show_status(&cfg);
-            ui_write_status(&cfg, 1);
+            display_update(&cfg);
 
             (void)restart_rtl_chain(&cfg, "WARN: rtl_fm restart failed; retrying.");
             last_retune_ms = mono_now_ms();
@@ -568,8 +564,7 @@ int main(int argc, char **argv)
                 gain_pending = 0;
             }
             last_retune_ms = mono_now_ms();
-            lcd_show_status(&cfg);
-            ui_write_status(&cfg, 1);
+            display_update(&cfg);
         }
 
         if (!child_is_running(&g_rtl) && (tnow - last_rtl_retry_ms) >= 600) {

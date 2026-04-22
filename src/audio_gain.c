@@ -20,7 +20,6 @@ void scale_pcm_i16(uint8_t *buf, ssize_t n, int vol_pct)
         float x = (float)s * gain;
         float ax = (x < 0.0f) ? -x : x;
 
-        // Gentle limiter above ~85% FS to keep boosted audio cleaner.
         if (ax > 28000.0f) {
             float excess = ax - 28000.0f;
             ax = 28000.0f + excess * 0.25f;

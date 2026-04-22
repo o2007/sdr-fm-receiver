@@ -10,10 +10,6 @@
 #include <time.h>
 #include <unistd.h>
 
-/*
- * Common PCF8574 LCD backpack pin map:
- * P0=RS, P1=RW, P2=E, P3=BL, P4=D4, P5=D5, P6=D6, P7=D7
- */
 #define LCD_RS 0x01
 #define LCD_RW 0x02
 #define LCD_EN 0x04
@@ -97,14 +93,14 @@ int lcd1602_init(Lcd1602 *lcd, int bus, int addr, int backlight)
     sleep_us(4500);
     if (write4bits(lcd, 0x30) != 0) return -1;
     sleep_us(150);
-    if (write4bits(lcd, 0x20) != 0) return -1; // 4-bit mode
+    if (write4bits(lcd, 0x20) != 0) return -1;
 
-    if (lcd_cmd(lcd, 0x28) != 0) return -1; // 2 line, 5x8
-    if (lcd_cmd(lcd, 0x08) != 0) return -1; // display off
-    if (lcd_cmd(lcd, 0x01) != 0) return -1; // clear
+    if (lcd_cmd(lcd, 0x28) != 0) return -1;
+    if (lcd_cmd(lcd, 0x08) != 0) return -1;
+    if (lcd_cmd(lcd, 0x01) != 0) return -1;
     sleep_us(2000);
-    if (lcd_cmd(lcd, 0x06) != 0) return -1; // entry mode
-    if (lcd_cmd(lcd, 0x0C) != 0) return -1; // display on, cursor off
+    if (lcd_cmd(lcd, 0x06) != 0) return -1;
+    if (lcd_cmd(lcd, 0x0C) != 0) return -1;
 
     lcd->enabled = 1;
     return 0;

@@ -189,8 +189,6 @@ int encoder_poll_step(Encoder *e)
             return 0;
     }
 
-    // Most mechanical encoders used in this project feel better at half-step.
-    // This improves responsiveness and reduces the "laggy" feel.
     if (e->quarter_steps >= 2) {
         e->quarter_steps = 0;
         return +1;
