@@ -1,21 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "radio_process.h"
+#include "time_util.h"
 
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
-
-static void sleep_ms(int ms)
-{
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-    nanosleep(&ts, NULL);
-}
 
 int child_is_running(ChildProc *p)
 {

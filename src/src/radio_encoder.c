@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -20,6 +19,7 @@
 #include "lcd1602_i2c.h"
 #include "radio_config.h"
 #include "radio_process.h"
+#include "time_util.h"
 
 static volatile sig_atomic_t g_stop = 0;
 static pthread_mutex_t g_state_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -58,21 +58,6 @@ static ButtonInput g_step_btn = {
     .last_state = 1, .last_change_ms = 0, .debounce_ms = 120
 };
 
-static int64_t now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000LL + (int64_t)ts.tv_nsec / 1000000LL;
-}
-
-static void sleep_ms(int ms)
-{
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-    nanosleep(&ts, NULL);
-}
-
 static void on_signal(int sig)
 {
     (void)sig;
@@ -85,7 +70,7 @@ static int step_button_init(ButtonInput *b)
     b->chip_fd = -1;
     b->line_fd = -1;
     b->last_state = 1;
-    b->last_change_ms = now_ms();
+    b->last_change_ms = mono_now_ms();
 
     for (int chip = 0; chip < 16; chip++) {
         char path[64];
@@ -139,7 +124,7 @@ static int step_button_poll_pressed(ButtonInput *b)
     if (ioctl(b->line_fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data) != 0) return 0;
 
     int st = data.values[0] ? 1 : 0;
-    int64_t t = now_ms();
+    int64_t t = mono_now_ms();
     if (st != b->last_state) {
         if ((t - b->last_change_ms) < b->debounce_ms) {
             b->last_state = st;
@@ -171,7 +156,7 @@ static void ui_send_pcm(const uint8_t *buf, ssize_t n)
 static void ui_write_status(const RadioConfig *cfg, int force)
 {
     if (!cfg || g_ui_status_path[0] == '\0') return;
-    int64_t tnow = now_ms();
+    int64_t tnow = mono_now_ms();
     if (!force && (tnow - g_last_status_write_ms) < 100) return;
     g_last_status_write_ms = tnow;
 
@@ -221,6 +206,32 @@ static void *relay_thread_fn(void *arg)
     }
 
     return NULL;
+}
+
+static int start_or_restart_relay_thread(void)
+{
+    if (g_relay_running) {
+        pthread_join(g_relay_tid, NULL);
+        g_relay_running = 0;
+    }
+    if (pthread_create(&g_relay_tid, NULL, relay_thread_fn, NULL) != 0) {
+        fprintf(stderr, "WARN: failed to start relay thread\n");
+        return -1;
+    }
+    g_relay_running = 1;
+    return 0;
+}
+
+static int restart_rtl_chain(const RadioConfig *cfg, const char *warn_msg)
+{
+    child_kill_group(&g_rtl);
+    sleep_ms(cfg->rtl_restart_delay_ms);
+    if (spawn_rtl_fm(&g_rtl, cfg) != 0) {
+        fprintf(stderr, "%s\n", warn_msg);
+        return -1;
+    }
+    (void)start_or_restart_relay_thread();
+    return 0;
 }
 
 static void config_defaults(RadioConfig *c)
@@ -303,7 +314,7 @@ static void set_gain_from_index(RadioConfig *cfg, int gain_idx)
     else snprintf(cfg->gain, sizeof(cfg->gain), "%s", k_gain_steps[gain_idx]);
 }
 
-static void lcd_show_status(const RadioConfig *cfg, int gain_pending)
+static void lcd_show_status(const RadioConfig *cfg)
 {
     if (!g_lcd.enabled || !cfg) return;
 
@@ -317,7 +328,6 @@ static void lcd_show_status(const RadioConfig *cfg, int gain_pending)
 
     // 16-char LCD dashboard:
     // LCD-safe Icelandic transliteration labels.
-    (void)gain_pending;
     snprintf(line0, sizeof(line0), "Tidni %5.1f", (double)cfg->target_freq_hz / 1e6);
     snprintf(line1, sizeof(line1), "Hljodstrykur %03d", vol);
 
@@ -460,14 +470,13 @@ int main(int argc, char **argv)
         if (lcd1602_init(&g_lcd, cfg.lcd_i2c_bus, cfg.lcd_i2c_addr, 1) == 0) {
             fprintf(stderr, "LCD ready on /dev/i2c-%d addr 0x%02X\n", cfg.lcd_i2c_bus, cfg.lcd_i2c_addr);
             (void)lcd1602_clear(&g_lcd);
-            lcd_show_status(&cfg, 0);
+            lcd_show_status(&cfg);
         } else {
             fprintf(stderr, "WARN: LCD init failed on /dev/i2c-%d addr 0x%02X\n", cfg.lcd_i2c_bus, cfg.lcd_i2c_addr);
         }
     }
 
-    g_relay_running = 1;
-    pthread_create(&g_relay_tid, NULL, relay_thread_fn, NULL);
+    (void)start_or_restart_relay_thread();
 
     fprintf(stderr, "Encoder control started (C modular).\n");
     fprintf(stderr, "Start: %.1f MHz, step: %d kHz, volume: %d%% (max %d%%), gain: %s\n",
@@ -484,7 +493,7 @@ int main(int argc, char **argv)
     ui_write_status(&cfg, 1);
 
     int64_t last_input_ms = 0;
-    int64_t last_retune_ms = now_ms();
+    int64_t last_retune_ms = mono_now_ms();
     int64_t last_rtl_retry_ms = 0;
     int gain_idx = gain_string_to_index(cfg.gain);
     int gain_pending = 0;
@@ -493,7 +502,7 @@ int main(int argc, char **argv)
         if (step_button_poll_pressed(&g_step_btn)) {
             cfg.step_hz = (cfg.step_hz == 100000) ? 10000 : 100000;
             fprintf(stderr, "Step: %d Hz\n", cfg.step_hz);
-            lcd_show_status(&cfg, gain_pending);
+            lcd_show_status(&cfg);
             ui_write_status(&cfg, 1);
         }
 
@@ -503,9 +512,9 @@ int main(int argc, char **argv)
             if (cfg.target_freq_hz < cfg.min_freq_hz) cfg.target_freq_hz = cfg.min_freq_hz;
             if (cfg.target_freq_hz > cfg.max_freq_hz) cfg.target_freq_hz = cfg.max_freq_hz;
             fprintf(stderr, "Target: %.1f MHz\n", (double)cfg.target_freq_hz / 1e6);
-            lcd_show_status(&cfg, gain_pending);
+            lcd_show_status(&cfg);
             ui_write_status(&cfg, 1);
-            last_input_ms = now_ms();
+            last_input_ms = mono_now_ms();
         }
 
         int sv = encoder_poll_step(&vol);
@@ -517,7 +526,7 @@ int main(int argc, char **argv)
             g_volume_pct = v;
             pthread_mutex_unlock(&g_state_mu);
             fprintf(stderr, "Volume: %d%%\n", v);
-            lcd_show_status(&cfg, gain_pending);
+            lcd_show_status(&cfg);
             ui_write_status(&cfg, 1);
         }
 
@@ -536,65 +545,37 @@ int main(int argc, char **argv)
                 set_gain_from_index(&cfg, gain_idx);
                 gain_pending = 1;
                 fprintf(stderr, "Gain: %s dB\n", strcmp(cfg.gain, "auto") == 0 ? "auto" : cfg.gain);
-                lcd_show_status(&cfg, gain_pending);
+                lcd_show_status(&cfg);
                 ui_write_status(&cfg, 1);
             }
         }
 
-        int64_t tnow = now_ms();
+        int64_t tnow = mono_now_ms();
         if (cfg.target_freq_hz != cfg.freq_hz &&
             (tnow - last_input_ms) >= cfg.retune_settle_ms &&
             (tnow - last_retune_ms) >= cfg.retune_cooldown_ms) {
 
             cfg.freq_hz = cfg.target_freq_hz;
             fprintf(stderr, "Tune: %.1f MHz\n", (double)cfg.freq_hz / 1e6);
-            lcd_show_status(&cfg, gain_pending);
+            lcd_show_status(&cfg);
             ui_write_status(&cfg, 1);
 
-            child_kill_group(&g_rtl);
-            sleep_ms(cfg.rtl_restart_delay_ms);
-            if (spawn_rtl_fm(&g_rtl, &cfg) == 0) {
-                if (g_relay_running) {
-                    pthread_join(g_relay_tid, NULL);
-                    g_relay_running = 0;
-                }
-                g_relay_running = 1;
-                pthread_create(&g_relay_tid, NULL, relay_thread_fn, NULL);
-            } else {
-                fprintf(stderr, "WARN: rtl_fm restart failed; retrying.\n");
-            }
-            last_retune_ms = now_ms();
+            (void)restart_rtl_chain(&cfg, "WARN: rtl_fm restart failed; retrying.");
+            last_retune_ms = mono_now_ms();
         } else if (gain_pending && (tnow - last_retune_ms) >= cfg.retune_cooldown_ms) {
             fprintf(stderr, "Apply gain: %s dB\n", strcmp(cfg.gain, "auto") == 0 ? "auto" : cfg.gain);
-            child_kill_group(&g_rtl);
-            sleep_ms(cfg.rtl_restart_delay_ms);
-            if (spawn_rtl_fm(&g_rtl, &cfg) == 0) {
-                if (g_relay_running) {
-                    pthread_join(g_relay_tid, NULL);
-                    g_relay_running = 0;
-                }
-                g_relay_running = 1;
-                pthread_create(&g_relay_tid, NULL, relay_thread_fn, NULL);
+            if (restart_rtl_chain(&cfg, "WARN: rtl_fm restart failed after gain change; retrying.") == 0) {
                 gain_pending = 0;
-            } else {
-                fprintf(stderr, "WARN: rtl_fm restart failed after gain change; retrying.\n");
             }
-            last_retune_ms = now_ms();
-            lcd_show_status(&cfg, gain_pending);
+            last_retune_ms = mono_now_ms();
+            lcd_show_status(&cfg);
             ui_write_status(&cfg, 1);
         }
 
         if (!child_is_running(&g_rtl) && (tnow - last_rtl_retry_ms) >= 600) {
             fprintf(stderr, "Radio process stopped; restarting with backoff.\n");
             last_rtl_retry_ms = tnow;
-            if (spawn_rtl_fm(&g_rtl, &cfg) == 0) {
-                if (g_relay_running) {
-                    pthread_join(g_relay_tid, NULL);
-                    g_relay_running = 0;
-                }
-                g_relay_running = 1;
-                pthread_create(&g_relay_tid, NULL, relay_thread_fn, NULL);
-            }
+            (void)restart_rtl_chain(&cfg, "WARN: rtl_fm restart failed; retrying.");
         }
 
         ui_write_status(&cfg, 0);
